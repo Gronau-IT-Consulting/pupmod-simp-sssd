@@ -73,7 +73,7 @@ define sssd::provider::ldap (
   Optional[String]                      $ldap_user_nds_login_allowed_time_map = undef,
   Optional[String]                      $ldap_user_principal               = undef,
   Optional[Array[String]]               $ldap_user_extra_attrs             = undef,
-  Optional[String]                      $ldap_user_ssh_public_key          = undef,
+  String                                $ldap_user_ssh_public_key          = 'sshPublicKey',
   Boolean                               $ldap_force_upper_case_realm       = false,
   Optional[Integer]                     $ldap_enumeration_refresh_timeout  = undef,
   Optional[Integer[0]]                  $ldap_purge_cache_timeout          = undef,
@@ -118,7 +118,7 @@ define sssd::provider::ldap (
   Optional[Stdlib::Absolutepath]        $app_pki_key                       = undef,
   Optional[Stdlib::Absolutepath]        $app_pki_cert                      = undef,
   Boolean                               $strip_128_bit_ciphers             = true,
-  Array[String]                         $ldap_tls_cipher_suite             = ['HIGH','-SSLv2'],
+  Optional[Array[String]]               $ldap_tls_cipher_suite             = undef,
   Boolean                               $ldap_id_use_start_tls             = true,
   Boolean                               $ldap_id_mapping                   = false,
   Optional[Integer[0]]                  $ldap_min_id                       = undef,
@@ -184,19 +184,40 @@ define sssd::provider::ldap (
 ) {
   include '::sssd'
 
+  if $facts['os']['name'] in ['RedHat','CentOS'] {
+    if $ldap_tls_cipher_suite {
+      $_tmp_ldap_tls_cipher_suite = $ldap_tls_cipher_suite
+    }
+    else {
+      $_tmp_ldap_tls_cipher_suite = ['HIGH', '-SSLv2']
+    }
+  }
+  elsif $facts['os']['name'] in ['Debian','Ubuntu'] {
+    # Debian/Ubuntu use GnuTLS so we require a GnuTLS compatible cipher suite list
+    if $ldap_tls_cipher_suite {
+      $_tmp_ldap_tls_cipher_suite = $ldap_tls_cipher_suite
+    }
+    else {
+      $_tmp_ldap_tls_cipher_suite = simplib::lookup('simp_options::gnutls::cipher_suite', { 'default_value' => ['SECURE256','SECURE128'] })
+    }
+  }
+  else {
+    fail("OS '${facts['os']['name']}' not supported by '${module_name}'")
+  }
+
   if $strip_128_bit_ciphers {
     # This is here due to a bug in the LDAP client library on EL6 that will set
     # the SSF to 128 when connecting over StartTLS if there are *any* 128-bit
     # ciphers in the list.
     if $facts['os']['name'] in ['RedHat','CentOS'] and (versioncmp($facts['os']['release']['major'],'7') < 0) {
-      $_ldap_tls_cipher_suite = $ldap_tls_cipher_suite + ['-AES128']
+      $_ldap_tls_cipher_suite = $_tmp_ldap_tls_cipher_suite + ['-AES128']
     }
     else {
-      $_ldap_tls_cipher_suite = $ldap_tls_cipher_suite
+      $_ldap_tls_cipher_suite = $_tmp_ldap_tls_cipher_suite
     }
   }
   else {
-    $_ldap_tls_cipher_suite = $ldap_tls_cipher_suite
+    $_ldap_tls_cipher_suite = $_tmp_ldap_tls_cipher_suite
   }
 
   if $app_pki_ca_dir {
@@ -204,17 +225,18 @@ define sssd::provider::ldap (
   } else {
     $ldap_tls_cacertdir = "${sssd::app_pki_dir}/cacerts"
   }
-
-  if $app_pki_key {
-    $ldap_tls_key = $app_pki_key
-  } else {
-    $ldap_tls_key = "${sssd::app_pki_dir}/private/${::fqdn}.pem"
-  }
+  $ldap_tls_cacert = "${ldap_tls_cacertdir}/cacerts.pem"
 
   if $app_pki_cert {
     $ldap_tls_cert = $app_pki_cert
   } else {
     $ldap_tls_cert = "${sssd::app_pki_dir}/public/${::fqdn}.pub"
+  }
+
+  if $app_pki_key {
+    $ldap_tls_key = $app_pki_key
+  } else {
+    $ldap_tls_key = "${sssd::app_pki_dir}/public/${::fqdn}.pem"
   }
 
   concat::fragment { "sssd_${name}_ldap_provider.domain":
